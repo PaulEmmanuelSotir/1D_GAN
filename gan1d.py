@@ -21,11 +21,13 @@ import utils
 
 from tensorflow.python.ops import array_ops
 
+__all__ = ['restore', 'generate', 'main']
+
 # Hyper parameters
 params = {
     'activation_function': utils.leaky_relu,
     'lr': 0.01,
-    'epoch_num': 15,
+    'epoch_num': 300,
     'batch_size': 32,
     'latent_dim': 30,
     'window': 8 * 48, # 8 = 2*2*2 = 3 convolution layers of stride 2
@@ -54,7 +56,7 @@ def discriminator(x, activation_function, reuse=None):
 
     # Last discrimination layer
     logits = tf.layers.dense(inputs=dense, units=1, name='dense2', reuse=reuse)
-    output = tf.nn.sigmoid(logits)
+    output = tf.nn.sigmoid(logits, name='output')
     return output, logits
 
 def generator(z, activation_function, window, num_channels, reuse=None):
@@ -76,7 +78,7 @@ def generator(z, activation_function, window, num_channels, reuse=None):
     bn_upconv1 = tf.layers.batch_normalization(inputs=upconv1, name='batch_norm4')
     upconv2 = tf.layers.conv2d_transpose(inputs=bn_upconv1, filters=32, kernel_size=(4, 1), strides=(stride, 1), padding='same', name='upconv2', activation=activation_function, reuse=reuse)
     upconv3 = tf.layers.conv2d_transpose(inputs=upconv2, filters=num_channels, kernel_size=(4, 1), strides=(stride, 1), padding='same', name='upconv3', activation=tf.nn.sigmoid, reuse=reuse)
-    return tf.squeeze(upconv3, axis=2)
+    return tf.squeeze(upconv3, axis=2, name='output')
 
 def gan_loss(z, x, activation_function, window):
     with tf.variable_scope('generator'):
@@ -112,7 +114,19 @@ def train_step(sess, z, batch_size, latent_dim, d_opt, g_opt, d_loss, g_loss, su
     # Return losses and summary
     return sess.run([summary_op, d_loss, g_loss], feed_dict={z: sample_z(batch_size, latent_dim)})
 
-def main(_):
+def restore(sess, checkpoint_dir=params['train_dir']):
+    latest = tf.train.latest_checkpoint(checkpoint_dir)
+    saver = tf.train.import_meta_graph(latest + '.meta')
+    saver.restore(sess, latest)
+
+def generate(sess, count=1):
+    graph = tf.get_default_graph()
+    z = graph.get_tensor_by_name('input/z:0')
+    gen = graph.get_tensor_by_name('generator/output:0')
+    result = sess.run([gen], feed_dict={z: sample_z(count, params['latent_dim'])})
+    return result
+
+def main(_=None):
     # Set log level to debug
     tf.logging.set_verbosity(tf.logging.INFO)
 
@@ -121,9 +135,9 @@ def main(_):
 
     with tf.name_scope('input'):
         # Latent input placeholder
-        z = tf.placeholder(tf.float32, [params['batch_size'], params['latent_dim']])
+        z = tf.placeholder(tf.float32, [params['batch_size'], params['latent_dim']], name='z')
         # Preloaded data input
-        data_initializer = tf.placeholder(dtype=timeserie.dtype, shape=timeserie.shape)
+        data_initializer = tf.placeholder(dtype=timeserie.dtype, shape=timeserie.shape, name='x')
         input_data = tf.Variable(data_initializer, trainable=False, collections=[])
         sample = tf.train.slice_input_producer([input_data], num_epochs=params['epoch_num'])
         samples = tf.train.batch(sample, batch_size=params['batch_size'])
@@ -167,11 +181,11 @@ def main(_):
                 # Save a checkpoint periodically
                 if step % params['checkpoint_period'] == 0:
                     print('Saving checkpoint...')
-                    saver.save(sess, params['train_dir'], global_step=step)
+                    saver.save(sess, params['train_dir'] + 'gan1d', global_step=step)
                 step += 1
         except tf.errors.OutOfRangeError:
             print('Saving...')
-            saver.save(sess, params['train_dir'], global_step=step)
+            saver.save(sess, params['train_dir'] + 'gan1d', global_step=step)
         finally:
             coord.request_stop()
         # Wait for threads to finish
