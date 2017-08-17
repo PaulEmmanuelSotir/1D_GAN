@@ -1,2 +1,2 @@
 # 1D_GAN
-Simple tensorflow implementation of Generative Adversarial Network with 1D convolutions.
+Simple tensorflow implementation of 1D convolutional Generative Adversarial Network.
