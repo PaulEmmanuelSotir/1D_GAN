@@ -1,4 +1,4 @@
-# 1D_GAN
+# 1D_GAN (work in progress)
 Simple tensorflow implementation of 1D convolutional Generative Adversarial Network.
 
 ## Run instructions
