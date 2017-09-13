@@ -1,7 +1,6 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
-"""1D GAN
-
+""" 1D GAN
 Simple tensorflow implementation of 1D Generative Adversarial Network.
 
 TODO:
@@ -21,125 +20,156 @@ TODO:
 """
 import os
 import io
-import time
-import argparse
 import numpy as np
 import pandas as pd
 import tensorflow as tf
-import matplotlib.pyplot as plt 
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 
 import utils
 
 __all__ = ['restore', 'generate', 'main']
 
-# TODO: use layer normalization instead of batch normalization?
+# TODO: Try to use layer normalization instead of batch normalization?
 
 # Hyper parameters
 params = {
-    'activation_function': utils.leaky_relu,
+    'activation_fn': utils.leaky_relu,  # Don't forget to change Xavier initialization accordingly when changing activation function
     'lr': 1e-4,
-    #'lambda': 10, #TODO: WGAN Gradient penalty hyperparameter
+    'lambda': 10,
     'window': 366,
     'epoch_num': 4000,
-    'batch_size': 64,
+    'batch_size': 128,
     'latent_dim': 30,
-    'n_discriminator': 40, # TODO: remove or re-implement it
-    'checkpoint_period': 2000,
-    'progress_check_period': 1,
-    'allow_gpu_mem_growth': True,
-    'dtype': tf.float32 # TODO: take this parameter into account
+    'n_discriminator': 1,
+    'n_generator': 20,
+    'checkpoint_period': 200,
+    'progress_check_period': 1
 }
 
-capacity = 8 # TODO: remove it, default value = 16
+ALLOW_GPU_MEM_GROWTH = True
+CAPACITY = 16  # TODO: remove it, default value = 16
+
 
 def sample_z(batch_size, latent_dim):
     return np.float32(np.random.normal(size=[batch_size, latent_dim]))
 
-def discriminator(x, activation_function, reuse=None):
-    """Model function of 1D GAN discriminator"""
-    init = lambda: tf.contrib.layers.xavier_initializer()
+
+def _xavier_init(scale=None, mode='FAN_AVG'):
+    """
+    Xavier initialization
+    """
+    # TODO: make sure this is the correct scale for tanh (some sources say ~1.32, others 4., but 1. seems to give better results)
+    # TODO: change it to tf.variance_scaling_initializer on tensorflow 1.3+
+    return tf.contrib.layers.variance_scaling_initializer(2. if scale == 'relu' else 1., mode=mode)
+
+
+def discriminator(x, activation_fn, reuse=None, scope=None):
+    """ Model function of 1D GAN discriminator """
     # Convolutional layers
-    conv1 = tf.layers.conv1d(inputs=x, filters=2*capacity, kernel_size=4, strides=2, activation=activation_function, kernel_initializer=init(), padding='valid', name='conv1', reuse=reuse)
-    conv2 = tf.layers.conv1d(inputs=conv1, filters=4*capacity, kernel_size=4, strides=2, activation=activation_function, kernel_initializer=init(), padding='valid', name='conv2', reuse=reuse)
-    conv3 = tf.layers.conv1d(inputs=conv2, filters=8*capacity, kernel_size=4, strides=2, activation=activation_function, kernel_initializer=init(), padding='valid', name='conv3', reuse=reuse)
+    conv = tf.layers.conv1d(inputs=x, filters=2 * CAPACITY, kernel_size=4, strides=2, activation=activation_fn,
+                            kernel_initializer=_xavier_init('relu'), padding='valid', name='conv_1', reuse=reuse)
+    conv = tf.layers.conv1d(inputs=conv, filters=4 * CAPACITY, kernel_size=4, strides=2, activation=activation_fn,
+                            kernel_initializer=_xavier_init('relu'), padding='valid', name='conv_2', reuse=reuse)
+    conv = tf.layers.conv1d(inputs=conv, filters=8 * CAPACITY, kernel_size=4, strides=2, activation=activation_fn,
+                            kernel_initializer=_xavier_init('relu'), padding='valid', name='conv_3', reuse=reuse)
+    conv = tf.reshape(conv, shape=[-1, np.prod([dim.value for dim in conv.shape[1:]])])
 
-    # Dense layer
-    conv_flat = tf.reshape(conv3, shape=[conv3.shape[0].value, -1])
-    dense = tf.layers.dense(inputs=conv_flat, units=1024, activation=activation_function, name='dense1', kernel_initializer=init(), reuse=reuse)
+    # Dense layers
+    dense = tf.layers.dense(inputs=conv, units=1024, activation=activation_fn, name='dense_1', kernel_initializer=_xavier_init(), reuse=reuse)
+    return tf.layers.dense(inputs=dense, units=1, activation=tf.nn.sigmoid, name='dense_2', reuse=reuse, kernel_initializer=_xavier_init())
 
-    # Last discrimination layer
-    return tf.layers.dense(inputs=dense, units=1, name='dense2', reuse=reuse, kernel_initializer=init())
 
-def generator(z, activation_function, window, num_channels, reuse=None):
-    """Model function of 1D GAN generator"""
-    init = lambda: tf.contrib.layers.xavier_initializer()
+def generator(z, activation_fn, window, num_channels, training=False, reuse=None):
+    """ Model function of 1D GAN generator """
     # Find dense feature vector size according to generated window size and convolution strides (note that if you change convolution padding or the number of convolution layers, you will have to change this value too)
     stride = 2
     kernel_size = 4
-    get_upconv_output_dim = lambda in_dim: (in_dim - kernel_size) // stride + 1 # Transposed convolution with VALID padding
-    dense_window = get_upconv_output_dim(get_upconv_output_dim(get_upconv_output_dim(window))) # We find the dimension of output after 3 convolutions on 1D window
+
+    # We find the dimension of output after 3 convolutions on 1D window
+    def get_upconv_output_dim(in_dim): return (in_dim - kernel_size) // stride + 1  # Transposed convolution with VALID padding
+    dense_window_size = get_upconv_output_dim(get_upconv_output_dim(get_upconv_output_dim(window)))
 
     # Fully connected layers
-    dense1 = tf.layers.dense(inputs=z, units=1024, name='dense1', activation=activation_function, kernel_initializer=init(), reuse=reuse)
-    dense1_bn = tf.layers.batch_normalization(dense1, name='dense1_bn', reuse=reuse)
-    dense2 = tf.layers.dense(inputs=dense1_bn, units=dense_window*8*capacity, name='dense2', activation=activation_function, kernel_initializer=init(), reuse=reuse)
-    dense2_bn = tf.layers.batch_normalization(dense2, name='dense2_bn', reuse=reuse)
-    dense_features = tf.reshape(dense2_bn, shape=[-1, dense_window, 1, 8*capacity])
-    
+    dense = tf.layers.dense(inputs=z, units=1024, name='dense1', kernel_initializer=_xavier_init('relu'), activation=activation_fn, reuse=reuse)
+
+    dense = tf.layers.dense(inputs=dense, units=dense_window_size * 8 * CAPACITY, name='dense2', kernel_initializer=_xavier_init('relu'), reuse=reuse)
+    dense = tf.layers.batch_normalization(dense, name='dense2_bn', training=training, reuse=reuse)
+    dense = activation_fn(dense)
+
+    dense = tf.reshape(dense, shape=[-1, dense_window_size, 1, 8 * CAPACITY])
+
     # Deconvolution layers (We use tf.nn.conv2d_transpose as there is no implementation of conv1d_transpose in tensorflow for now)
-    upconv1 = tf.layers.conv2d_transpose(inputs=dense_features, filters=4*capacity, kernel_size=(kernel_size, 1), strides=(stride, 1), padding='valid', name='upconv1', activation=activation_function, kernel_initializer=init(), reuse=reuse)
-    upconv1_bn = tf.layers.batch_normalization(upconv1, name='upconv1_bn', reuse=reuse)
-    upconv2 = tf.layers.conv2d_transpose(inputs=upconv1_bn, filters=2*capacity, kernel_size=(kernel_size, 1), strides=(stride, 1), padding='valid', name='upconv2', activation=activation_function, kernel_initializer=init(), reuse=reuse)
-    upconv2_bn = tf.layers.batch_normalization(upconv2, name='upconv2_bn', reuse=reuse)
-    upconv3 = tf.layers.conv2d_transpose(inputs=upconv2_bn, filters=num_channels, kernel_size=(kernel_size, 1), strides=(stride, 1), padding='valid', name='upconv3', activation=tf.nn.sigmoid, kernel_initializer=init(), reuse=reuse)
-    return tf.squeeze(upconv3, axis=2, name='output')
+    upconv = tf.layers.conv2d_transpose(inputs=dense, filters=4 * CAPACITY, kernel_size=(kernel_size, 1), strides=(stride, 1),
+                                        padding='valid', name='upconv1', kernel_initializer=_xavier_init('relu'), reuse=reuse)
+    upconv = tf.layers.batch_normalization(upconv, name='upconv1_bn', training=training, reuse=reuse)
+    upconv = activation_fn(upconv)
 
-def em_loss(y_coefficients, y_pred):
-    """ Earth mover distance (wasserstein loss) """
-    return tf.reduce_mean(tf.multiply(y_coefficients, y_pred))
+    upconv = tf.layers.conv2d_transpose(inputs=upconv, filters=2 * CAPACITY, kernel_size=(kernel_size, 1), strides=(stride, 1),
+                                        padding='valid', name='upconv2', kernel_initializer=_xavier_init('relu'), reuse=reuse)
+    upconv = tf.layers.batch_normalization(upconv, name='upconv2_bn', training=training, reuse=reuse)
+    upconv = activation_fn(upconv)
 
-def gan_losses(z, x, activation_function, window):
+    upconv = tf.layers.conv2d_transpose(inputs=upconv, filters=num_channels, kernel_size=(kernel_size, 1), strides=(stride, 1),
+                                        padding='valid', name='upconv3', kernel_initializer=_xavier_init(), reuse=reuse)
+    upconv = tf.layers.batch_normalization(upconv, name='upconv3_bn', training=training, reuse=reuse)
+    return tf.squeeze(upconv, axis=2, name='output')
+
+
+def gan_losses(z, x, activation_fn, window, grad_penalty_lambda, gen_training):
     with tf.variable_scope('generator'):
-        g_sample = generator(z, activation_function, window, num_channels=x.shape[-1].value)
+        g_sample = generator(z, activation_fn, window, num_channels=x.shape[-1].value, training=gen_training)
     # Get interpolates for gradient penalty (improved WGAN)
-    epsilon = tf.random_uniform([], 0.0, 1.0)
-    x_hat = epsilon * x + (1.0 - epsilon) * g_sample
+    with tf.variable_scope('gradient_penalty'):
+        epsilon = tf.random_uniform([], 0.0, 1.0)
+        x_hat = epsilon * x + (1.0 - epsilon) * g_sample
     # Apply discriminator on real, fake and interpolated data
     with tf.variable_scope('discriminator'):
-        d_real = discriminator(x, activation_function)
-        d_fake = discriminator(g_sample, activation_function, reuse=True)
-        d_hat = discriminator(x_hat, activation_function, reuse=True)
+        d_real = discriminator(x, activation_fn)
+        d_fake = discriminator(g_sample, activation_fn, reuse=True)
+        d_hat = discriminator(x_hat, activation_fn, reuse=True)
     # Process gradient penalty
-    gradients = tf.gradients(d_hat, x_hat)
-    gradient_penalty = 10.0 * tf.square(tf.norm(gradients[0], ord=2) - 1.0) # TODO: Use lambda hyperparameter here
+    with tf.variable_scope('gradient_penalty'):
+        gradients = tf.gradients(d_hat, x_hat)[0]
+        assert len(gradients.shape) == 3, 'Bad gradient rank'
+        flat_grad_dim = np.prod([dim.value for dim in gradients.shape[1:]])
+        gradient_penalty = grad_penalty_lambda * tf.reduce_mean(tf.square(tf.norm(tf.reshape(gradients, shape=[-1, flat_grad_dim]), ord=2) - 1.0))
     # Losses
-    d_loss = em_loss(tf.ones(z.shape[0].value), d_fake) - em_loss(tf.ones(z.shape[0].value), d_real) + gradient_penalty
-    g_loss = tf.reduce_mean(d_fake)
-    # Log losses and gradients to summary
-    tf.summary.histogram('gradients', gradients)
-    tf.summary.scalar('gradient_penalty', gradient_penalty)
-    tf.summary.scalar('generator_loss', g_loss)
-    tf.summary.scalar('discriminator_loss', d_loss)
+    with tf.variable_scope('loss'):
+        g_loss = tf.reduce_mean(d_fake)
+        d_loss = tf.reduce_mean(d_real) - g_loss + gradient_penalty
+        # Log losses and gradients to summary
+        tf.summary.scalar('generator_loss', g_loss)
+        tf.summary.scalar('discriminator_loss', d_loss)
+        tf.summary.scalar('gradient_penalty', gradient_penalty)
     return d_loss, g_loss
 
+
 def gan_optimizers(d_loss, g_loss, lr):
-    for v in tf.trainable_variables():
+    # TODO: uncomment this ad put summarization back
+    """for v in tf.trainable_variables():
         if 'kernel' in v.name:
             utils.visualize_kernel(v, v.name)
         else:
-            tf.summary.histogram(v.name, v)
+            tf.summary.histogram(v.name, v)"""
     disc_vars = [v for v in tf.trainable_variables() if v.name.startswith('discriminator')]
     gen_vars = [v for v in tf.trainable_variables() if v.name.startswith('generator')]
-    extra_update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS) # Nescessary for batch normalization to update its mean and variance
+    extra_update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)  # Nescessary for batch normalization to update its mean and variance
     with tf.control_dependencies(extra_update_ops):
-        d_optimizer = tf.train.AdamOptimizer(learning_rate=lr, beta1=0.5, beta2=0.9).minimize(d_loss, var_list=disc_vars)
-        g_optimizer = tf.train.AdamOptimizer(learning_rate=lr, beta1=0.5, beta2=0.9).minimize(g_loss, var_list=gen_vars)
+        print(disc_vars)
+        print('\n')
+        print(gen_vars)
+        d_optimizer = tf.train.AdamOptimizer(learning_rate=lr, beta1=0.5, beta2=0.9).minimize(d_loss, var_list=disc_vars, name='disc_opt')
+        g_optimizer = tf.train.AdamOptimizer(learning_rate=lr, beta1=0.5, beta2=0.9).minimize(g_loss, var_list=gen_vars, name='gen_opt')
     return d_optimizer, g_optimizer
+
 
 def restore(sess, checkpoint_dir):
     latest = tf.train.latest_checkpoint(checkpoint_dir)
     saver = tf.train.import_meta_graph(latest + '.meta')
     saver.restore(sess, latest)
+
 
 def generate(sess, count=1):
     graph = tf.get_default_graph()
@@ -147,24 +177,29 @@ def generate(sess, count=1):
     gen = graph.get_tensor_by_name('generator/output:0')
     return sess.run(gen, feed_dict={z: sample_z(count, params['latent_dim'])})
 
+
 def generate_curve_plots(sess):
-    data = generate(sess, 64)
+    data = generate(sess)
     # Plot first generated curves to byte buffer
-    d = pd.DataFrame([t for t in data[0]], columns=['price', 'volume'])
     buffer = io.BytesIO()
-    d.plot().get_figure().savefig(buffer, format='png', dpi=250)
+    fig = pd.DataFrame(data[0], columns=['price', 'volume']).plot().get_figure()
+    fig.savefig(buffer, format='png', dpi=250)
+    plt.close(fig)
     buffer.seek(0)
     return buffer.getvalue()
 
+
 def summarize_generated_curves():
     # Decode generated curve plot byte buffer and save it to summary
-    image = tf.placeholder(tf.string)
-    decoded_im = tf.image.decode_png(image, channels=4)
-    decoded_im = tf.expand_dims(decoded_im, 0)
-    tf.summary.image('generated_curve', decoded_im)
+    with tf.variable_scope('curve_summarization'):
+        image = tf.placeholder(tf.string, [], name='curve')
+        decoded_im = tf.image.decode_png(image, channels=4)
+        decoded_im = tf.expand_dims(decoded_im, 0)
+        tf.summary.image('generated_curve', decoded_im)
     return image
 
-def main(_=None):    
+
+def main(_=None):
     train_dir = '/output/models/' if tf.flags.FLAGS.floyd_job else './models/'
     data_path = '/input/data.csv' if tf.flags.FLAGS.floyd_job else './data/data.csv'
 
@@ -174,23 +209,17 @@ def main(_=None):
     # Load time serie data
     timeserie = utils.load_timeserie(data_path, params['window'])
 
-    with tf.name_scope('input'):
-        # Latent input placeholder
-        z = tf.placeholder(tf.float32, [params['batch_size'], params['latent_dim']], name='z')
+    with tf.variable_scope('input'):
+        gen_training = tf.placeholder_with_default(False, [], name='training')
+        z = tf.placeholder(tf.float32, [None, params['latent_dim']], name='z')
         # Preloaded data input
-        data_initializer = tf.placeholder(dtype=timeserie.dtype, shape=timeserie.shape, name='x')
-        input_data = tf.Variable(data_initializer, trainable=False, collections=[])
+        dataset_initializer = tf.placeholder(dtype=timeserie.dtype, shape=timeserie.shape, name='x')
+        input_data = tf.Variable(dataset_initializer, trainable=False, collections=[])
         sample = tf.train.slice_input_producer([input_data], num_epochs=params['epoch_num'])
         samples = tf.train.batch(sample, batch_size=params['batch_size'])
-        # TODO: temp, remove it
-        with tf.name_scope('sample'):
-            for s in sample:
-                tf.summary.histogram(str(s), s)
-        with tf.name_scope('samples'):
-            tf.summary.histogram(str(samples), samples)
 
     # Create optimizers
-    d_loss, g_loss = gan_losses(z, samples, params['activation_function'], params['window'])
+    d_loss, g_loss = gan_losses(z, samples, params['activation_fn'], params['window'], params['lambda'], gen_training)
     d_optimizer, g_optimizer = gan_optimizers(d_loss, g_loss, params['lr'])
 
     # Define generated curve plots summarization
@@ -200,14 +229,13 @@ def main(_=None):
     saver = tf.train.Saver()
 
     # Create variable initialization op
-    init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
+    init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer(), input_data.initializer)
 
-    with tf.Session(config=utils.tf_config(params['allow_gpu_mem_growth'])) as sess:
+    with tf.Session(config=utils.tf_config(ALLOW_GPU_MEM_GROWTH)) as sess:
         # TODO: restore previous training session if any with saver and tf.gfile.Exists(...)
 
         # Intialize variables
-        sess.run(init_op)
-        sess.run(input_data.initializer, feed_dict={data_initializer: timeserie})
+        sess.run(init_op, feed_dict={dataset_initializer: timeserie})
 
         # Create summary utils
         summary_op = tf.summary.merge_all()
@@ -221,19 +249,20 @@ def main(_=None):
         try:
             step = 1
             while not coord.should_stop():
-                latent = lambda: sample_z(params['batch_size'], params['latent_dim'])
+                def latent(): return sample_z(params['batch_size'], params['latent_dim'])
                 # Train discriminator
                 for _ in range(params['n_discriminator']):
-                    _ = sess.run(d_optimizer, feed_dict={z: latent()})
+                    sess.run(d_optimizer, feed_dict={z: latent()})
                 # Train generator
-                _ = sess.run(g_optimizer, feed_dict={z: latent()})
+                for _ in range(params['n_generator']):
+                    sess.run(g_optimizer, feed_dict={z: latent(), gen_training: True})
                 # Show progress and append results to summary
                 if step % params['progress_check_period'] == 0:
                     # Plot samples curves to tensorboard summary
                     im = generate_curve_plots(sess)
-                    summary, d_loss_curr, g_loss_curr = sess.run([summary_op, d_loss, g_loss], feed_dict={z: latent(), image: im})
+                    summary = sess.run(summary_op, feed_dict={z: latent(), image: im})
                     summary_writer.add_summary(summary, step)
-                    print('STEP=%d\tdisc_loss=%.4f\tgen_loss=%.4f' % (step, d_loss_curr, g_loss_curr))
+                    print('STEP=%d\t' % (step))
                 # Save a checkpoint periodically
                 if step % params['checkpoint_period'] == 0:
                     print('Saving checkpoint...')
@@ -246,6 +275,7 @@ def main(_=None):
             coord.request_stop()
         # Wait for threads to finish
         coord.join(threads)
+
 
 if __name__ == '__main__':
     tf.flags.DEFINE_bool('floyd-job', False, 'Change working directories for training on Floyd.')

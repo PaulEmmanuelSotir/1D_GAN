@@ -11,6 +11,4 @@ sdist
 var
 
 data
-train
-train0_3000epochs
-floyd_train
+models
