@@ -1,6 +1,6 @@
-# 1D_GAN (work in progress)
+# 1D_GAN
 
-Simple tensorflow implementation of 1D convolutional Generative Adversarial Network.
+Tensorflow implementation of 1D convolutional Generative Adversarial Network (improved WGAN variant, see [Improved Training of Wasserstein GANs](https://arxiv.org/abs/1704.00028)).
 
 ## Run instructions
 
