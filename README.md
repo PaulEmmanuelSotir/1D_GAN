@@ -31,5 +31,5 @@ Also note that this project can run on [Floyd](https://www.floydhub.com/) (Herok
 
 ```bash
 # To run a Floyd training job, use the following command:
-floyd run --data paulemmanuel/datasets/btc_eur_1y/1 --env tensorflow-1.2 --tensorboard --gpu "python gan1d.py --floyd-job"
+floyd run --data paulemmanuel/datasets/btc_eur_1y/1 --env tensorflow-1.4 --tensorboard --gpu "python gan1d.py --floyd-job"
 ```
