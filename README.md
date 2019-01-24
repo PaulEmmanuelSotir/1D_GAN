@@ -1,6 +1,8 @@
-# 1D_GAN
+# 1D_GAN (WIP)
 
 Tensorflow implementation of 1D convolutional Generative Adversarial Network (improved WGAN variant, see [Improved Training of Wasserstein GANs](https://arxiv.org/abs/1704.00028)).
+
+### Be aware this is a Work In Progress, generator and disciminator doesn't converge for an unknown reason (see https://github.com/PaulEmmanuelSotir/1D_GAN/issues/1)
 
 ## Run instructions
 
