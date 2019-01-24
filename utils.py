@@ -17,8 +17,9 @@ def tf_config(allow_growth=True, **kwargs):
 
 def load_timeserie(path, window=-1, dtype=np.float32):
     # Load data
-    timeserie = np.genfromtxt(path, delimiter=',', dtype=dtype)
-    timeserie = timeserie[:, 1:]
+    # timeserie = np.genfromtxt(path, delimiter=',', dtype=dtype)
+    # timeserie = timeserie[:, 1:]
+    timeserie = [[np.sin(i / (1. + i / 100000.))] for i in range(1000000)]  # TODO: remove it (test sinusoidal datatset)
     # Normalize data
     timeserie = preprocessing.StandardScaler().fit_transform(timeserie)
     # Delete zero pad data and slice data according to window size

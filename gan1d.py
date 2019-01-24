@@ -40,10 +40,10 @@ hp = {'activation_fn': utils.leaky_relu,  # Don't forget to change Xavier initia
       #       'lr_cycle_growth': 1.5,
       #       'minimal_lr': 5e-8},
       'window': 366,
-      'epochs': 200,
-      'latent_dim': 30,
-      'batch_size': 64,
-      'n_generator': 20,
+      'epochs': 900,
+      'latent_dim': 32,
+      'batch_size': 16,
+      'n_generator': 1,
       'n_discriminator': 1,
       'grad_penalty_lambda': 10.}
 
@@ -66,6 +66,8 @@ def discriminator(x, activation_fn, reuse=None, scope=None):
                             kernel_initializer=utils.xavier_init('relu'), padding='valid', name='conv_2', reuse=reuse)
     conv = tf.layers.conv1d(inputs=conv, filters=8 * CAPACITY, kernel_size=4, strides=2, activation=activation_fn,
                             kernel_initializer=utils.xavier_init('relu'), padding='valid', name='conv_3', reuse=reuse)
+    conv = tf.layers.conv1d(inputs=conv, filters=8 * CAPACITY, kernel_size=4, strides=2, activation=activation_fn,
+                            kernel_initializer=utils.xavier_init('relu'), padding='valid', name='conv_4', reuse=reuse)
     conv = tf.reshape(conv, shape=[-1, np.prod([dim.value for dim in conv.shape[1:]])])
 
     # Dense layers
@@ -79,9 +81,9 @@ def generator(z, activation_fn, window, num_channels, training=False, reuse=None
     stride = 2
     kernel_size = 4
 
-    # We find the dimension of output after 3 convolutions on 1D window
+    # We find the dimension of output after 4 convolutions on 1D window
     def get_upconv_output_dim(in_dim): return (in_dim - kernel_size) // stride + 1  # Transposed convolution with VALID padding
-    dense_window_size = get_upconv_output_dim(get_upconv_output_dim(get_upconv_output_dim(window)))
+    dense_window_size = get_upconv_output_dim(get_upconv_output_dim(get_upconv_output_dim(get_upconv_output_dim(window))))
 
     # Fully connected layers
     dense = tf.layers.dense(inputs=z, units=1024, name='dense1', kernel_initializer=utils.xavier_init('relu'), activation=activation_fn, reuse=reuse)
@@ -93,7 +95,12 @@ def generator(z, activation_fn, window, num_channels, training=False, reuse=None
     dense = tf.reshape(dense, shape=[-1, dense_window_size, 1, 8 * CAPACITY])
 
     # Deconvolution layers (We use tf.nn.conv2d_transpose as there is no implementation of conv1d_transpose in tensorflow for now)
-    upconv = tf.layers.conv2d_transpose(inputs=dense, filters=4 * CAPACITY, kernel_size=(kernel_size, 1), strides=(stride, 1),
+    upconv = tf.layers.conv2d_transpose(inputs=dense, filters=8 * CAPACITY, kernel_size=(kernel_size, 1), strides=(stride, 1),
+                                        padding='valid', name='upconv0', kernel_initializer=utils.xavier_init('relu'), reuse=reuse)
+    upconv = tf.layers.batch_normalization(upconv, name='upconv0_bn', training=training, reuse=reuse)
+    upconv = activation_fn(upconv)
+
+    upconv = tf.layers.conv2d_transpose(inputs=upconv, filters=4 * CAPACITY, kernel_size=(kernel_size, 1), strides=(stride, 1),
                                         padding='valid', name='upconv1', kernel_initializer=utils.xavier_init('relu'), reuse=reuse)
     upconv = tf.layers.batch_normalization(upconv, name='upconv1_bn', training=training, reuse=reuse)
     upconv = activation_fn(upconv)
@@ -171,7 +178,7 @@ def generate_curve_plots(sess):
     data = generate(sess)
     # Plot first generated curves to byte buffer
     buffer = io.BytesIO()
-    fig = pd.DataFrame(data[0], columns=['price', 'volume']).plot().get_figure()
+    fig = pd.DataFrame(data[0]).plot().get_figure()
     fig.savefig(buffer, format='png', dpi=150)
     plt.close(fig)
     buffer.seek(0)
@@ -257,7 +264,7 @@ def train(dataset, hp, sample_shape, train_dir):
 
 
 def main(_=None):
-    train_dir = '/output/models/' if tf.flags.FLAGS.floyd_job else './models/'
+    train_dir = '/output/models/sinus_test5/' if tf.flags.FLAGS.floyd_job else './models/sinus_test5/'
     data_path = '/input/data.csv' if tf.flags.FLAGS.floyd_job else './data/data.csv'
 
     # Set log level to debug
