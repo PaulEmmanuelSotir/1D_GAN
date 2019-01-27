@@ -18,7 +18,7 @@ cd ./1D_GAN
 - And train the model
 
 ```bash
-# By default, the model will be trained on a 2 channels timeserie of bitcoin to eur exchange rate and volumes (csv file in *./data* directory)
+# By default, the model will be trained on sinusoidal curves of random frequency and offset
 python gan1d.py
 ```
 
