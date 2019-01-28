@@ -6,7 +6,7 @@ Tensorflow implementation of 1D convolutional Generative Adversarial Network (im
 
 ## Run instructions
 
-Assuming you installed Python 3 with *tensorflow*, *numpy*, *matplotlib* and *pandas* you need to:
+Assuming you installed Python 3 with *tensorflow*, *numpy*, *matplotlib*, *scikit-learn* and *pandas* you need to:
 
 - Clone the project
 
