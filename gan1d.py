@@ -57,7 +57,7 @@ def sample_z(batch_size, latent_dim):
     return np.float32(np.random.normal(size=[batch_size, latent_dim]))
 
 
-def discriminator(x, activation_fn, reuse=None, scope=None):
+def discriminator(x, activation_fn, training, reuse=None):
     """ Model function of 1D GAN discriminator """
     # Convolutional layers
     conv = tf.layers.conv1d(inputs=x, filters=2 * CAPACITY, kernel_size=4, strides=2, activation=activation_fn,
@@ -75,7 +75,7 @@ def discriminator(x, activation_fn, reuse=None, scope=None):
     return tf.layers.dense(inputs=dense, units=1, activation=tf.nn.sigmoid, name='dense_2', reuse=reuse, kernel_initializer=utils.xavier_init())
 
 
-def generator(z, activation_fn, window, num_channels, training=False, reuse=None):
+def generator(z, activation_fn, window, num_channels, training, reuse=None):
     """ Model function of 1D GAN generator """
     # Find dense feature vector size according to generated window size and convolution strides (note that if you change convolution padding or the number of convolution layers, you will have to change this value too)
     stride = 2
@@ -84,35 +84,33 @@ def generator(z, activation_fn, window, num_channels, training=False, reuse=None
     # We find the dimension of output after 4 convolutions on 1D window
     def get_upconv_output_dim(in_dim): return (in_dim - kernel_size) // stride + 1  # Transposed convolution with VALID padding
     dense_window_size = get_upconv_output_dim(get_upconv_output_dim(get_upconv_output_dim(get_upconv_output_dim(window))))
+    reuse_batchnorm = reuse
 
     # Fully connected layers
     dense = tf.layers.dense(inputs=z, units=1024, name='dense1', kernel_initializer=utils.xavier_init('relu'), activation=activation_fn, reuse=reuse)
 
     dense = tf.layers.dense(inputs=dense, units=dense_window_size * 8 * CAPACITY, name='dense2', kernel_initializer=utils.xavier_init('relu'), reuse=reuse)
-    dense = tf.layers.batch_normalization(dense, name='dense2_bn', training=training, reuse=reuse)
-    dense = activation_fn(dense)
+    dense = activation_fn(tf.layers.batch_normalization(dense, name='dense2_bn', training=training, reuse=reuse_batchnorm))
 
     dense = tf.reshape(dense, shape=[-1, dense_window_size, 1, 8 * CAPACITY])
 
     # Deconvolution layers (We use tf.nn.conv2d_transpose as there is no implementation of conv1d_transpose in tensorflow for now)
     upconv = tf.layers.conv2d_transpose(inputs=dense, filters=8 * CAPACITY, kernel_size=(kernel_size, 1), strides=(stride, 1),
                                         padding='valid', name='upconv0', kernel_initializer=utils.xavier_init('relu'), reuse=reuse)
-    upconv = tf.layers.batch_normalization(upconv, name='upconv0_bn', training=training, reuse=reuse)
-    upconv = activation_fn(upconv)
+    upconv = activation_fn(tf.layers.batch_normalization(upconv, name='upconv0_bn', training=training, reuse=reuse_batchnorm))
 
     upconv = tf.layers.conv2d_transpose(inputs=upconv, filters=4 * CAPACITY, kernel_size=(kernel_size, 1), strides=(stride, 1),
                                         padding='valid', name='upconv1', kernel_initializer=utils.xavier_init('relu'), reuse=reuse)
-    upconv = tf.layers.batch_normalization(upconv, name='upconv1_bn', training=training, reuse=reuse)
-    upconv = activation_fn(upconv)
+    upconv = activation_fn(tf.layers.batch_normalization(upconv, name='upconv1_bn', training=training, reuse=reuse_batchnorm))
 
     upconv = tf.layers.conv2d_transpose(inputs=upconv, filters=2 * CAPACITY, kernel_size=(kernel_size, 1), strides=(stride, 1),
                                         padding='valid', name='upconv2', kernel_initializer=utils.xavier_init('relu'), reuse=reuse)
-    upconv = tf.layers.batch_normalization(upconv, name='upconv2_bn', training=training, reuse=reuse)
-    upconv = activation_fn(upconv)
+    upconv = activation_fn(tf.layers.batch_normalization(upconv, name='upconv2_bn', training=training, reuse=reuse_batchnorm))
 
     upconv = tf.layers.conv2d_transpose(inputs=upconv, filters=num_channels, kernel_size=(kernel_size, 1), strides=(stride, 1),
-                                        padding='valid', name='upconv3', kernel_initializer=utils.xavier_init(), reuse=reuse)
-    upconv = tf.layers.batch_normalization(upconv, name='upconv3_bn', training=training, reuse=reuse)
+                                        padding='valid', name='upconv3', kernel_initializer=utils.xavier_init(''), reuse=reuse)
+    upconv = tf.layers.batch_normalization(upconv, name='upconv3_bn', training=training, reuse=reuse_batchnorm)
+
     return tf.squeeze(upconv, axis=2, name='output')
 
 
@@ -126,10 +124,10 @@ def gan_losses(z, x, activation_fn, window, grad_penalty_lambda, gan_training):
             x_hat = epsilon * x + (1.0 - epsilon) * g_sample
     # Apply discriminator on real, fake and interpolated data
     with tf.variable_scope('discriminator'):
-        d_real = discriminator(x, activation_fn)
-        d_fake = discriminator(g_sample, activation_fn, reuse=True)
+        d_real = discriminator(x, activation_fn, training=gan_training)
+        d_fake = discriminator(g_sample, activation_fn, reuse=True, training=gan_training)
         if grad_penalty_lambda is not None:
-            d_hat = discriminator(x_hat, activation_fn, reuse=True)
+            d_hat = discriminator(x_hat, activation_fn, reuse=True, training=gan_training)
     # Process gradient penalty
     gradient_penalty = 0.
     if grad_penalty_lambda is not None:
@@ -138,10 +136,11 @@ def gan_losses(z, x, activation_fn, window, grad_penalty_lambda, gan_training):
             assert len(gradients.shape) == 3, 'Bad gradient rank'
             flat_grad_dim = np.prod([dim.value for dim in gradients.shape[1:]])
             gradient_penalty = grad_penalty_lambda * tf.reduce_mean(tf.square(tf.norm(tf.reshape(gradients, shape=[-1, flat_grad_dim]), ord=2) - 1.0))
+
     # Losses
-    with tf.variable_scope('loss'):
-        g_loss = tf.reduce_mean(d_fake)
-        d_loss = tf.reduce_mean(d_real) - g_loss + gradient_penalty
+    with tf.variable_scope('losses'):
+        g_loss = tf.reduce_mean(d_fake, name='g_loss')
+        d_loss = tf.add(tf.reduce_mean(d_real) - g_loss, gradient_penalty, name='d_loss')
     return d_loss, g_loss
 
 
@@ -259,19 +258,23 @@ def train(dataset, hp, sample_shape, train_dir):
             if epoch % CHECKPOINT_PERIOD == 0:
                 print('Saving checkpoint...')
                 saver.save(sess, os.path.join(train_dir, 'gan1d'), global_step=epoch)
+            if np.isnan(mean_d_loss) or np.isnan(mean_g_loss):
+                print('Model diverged! (Nan values)')
+                break
         print('Training done, saving...')
         saver.save(sess, os.path.join(train_dir, 'gan1d'), global_step=epoch)
 
 
 def main(_=None):
-    train_dir = '/output/models/sinus_test5/' if tf.flags.FLAGS.floyd_job else './models/sinus_test5/'
-    data_path = '/input/data.csv' if tf.flags.FLAGS.floyd_job else './data/data.csv'
+    train_dir = '/output/models/sinus_test20/' if tf.flags.FLAGS.floyd_job else './models/sinus_test20/'
+    data_path = './data/data.csv'
+    # data_path = './data/1.mp3'
 
     # Set log level to debug
     tf.logging.set_verbosity(tf.logging.INFO)
 
     # Load time serie data
-    timeserie = utils.load_timeserie(data_path, hp['window'])
+    timeserie, scaler = utils.load_timeserie(data_path, hp['window'])
     sample_shape = timeserie.shape[1:]
 
     # Train 1D GAN
