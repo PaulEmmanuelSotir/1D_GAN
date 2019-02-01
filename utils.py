@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
+import os
 import math
+import pydub
+import tempfile
 import numpy as np
+import scipy.io.wavfile
 import tensorflow as tf
 from sklearn import preprocessing
 from tensorflow.python.client import timeline
@@ -20,15 +24,17 @@ def load_timeserie(path, window=-1, dtype=np.float32):
     # timeserie = np.genfromtxt(path, delimiter=',', dtype=dtype)
     # timeserie = timeserie[:, 1:]
     timeserie = [[np.sin(i / (1. + i / 100000.))] for i in range(1000000)]  # TODO: remove it (test sinusoidal datatset)
+    #rate, timeserie = read_mp3(path)
     # Normalize data
-    timeserie = preprocessing.StandardScaler().fit_transform(timeserie)
+    scaler = preprocessing.StandardScaler()
+    timeserie = scaler.fit_transform(timeserie)
     # Delete zero pad data and slice data according to window size
     # TODO: make overlaping windows!
     if window > 0:
         n = (len(timeserie) // window) * window
         timeserie = timeserie[:n]
         timeserie = np.reshape(timeserie, (-1, window, timeserie.shape[-1]))
-    return timeserie
+    return timeserie, scaler
 
 
 def _cosine_annealing(x):
@@ -145,3 +151,25 @@ class TensorflowProfiler:
                 ctf = tl.generate_chrome_trace_format()
                 with open(self._timeline_file, 'w') as file:
                     file.write(ctf)
+
+
+def read_mp3(file_path):
+    """
+    Code from https://stackoverflow.com/questions/38192663/trying-to-convert-an-mp3-file-to-a-numpy-array-and-ffmpeg-just-hangs
+    Read an MP3 File into numpy data.
+    :param file_path: String path to a file
+    :param as_float: Cast data to float and normalize to [-1, 1]
+    :return: Tuple(rate, data), where
+        rate is an integer indicating samples/s
+        data is an ndarray(n_samples, 2)[int16]
+    """
+
+    path, ext = os.path.splitext(file_path)
+    assert ext == '.mp3'
+    mp3 = pydub.AudioSegment.from_mp3(file_path)
+    file, path = tempfile.mkstemp()
+    mp3.export(path, format="wav")
+    rate, data = scipy.io.wavfile.read(path)
+    os.close(file)
+    os.remove(path)
+    return rate, data
