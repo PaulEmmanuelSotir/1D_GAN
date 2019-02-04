@@ -33,7 +33,7 @@ __all__ = ['restore', 'generate', 'main']
 
 
 # Hyper parameters
-hp = {'activation_fn': utils.leaky_relu,  # Don't forget to change Xavier initialization accordingly when changing activation function
+hp = {'activation_fn': tf.nn.leaky_relu,  # Don't forget to change Xavier initialization accordingly when changing activation function
       'lr': 1e-4,
       #   'warm_resart_lr': {
       #       'initial_cycle_length': 20,
@@ -57,9 +57,10 @@ def sample_z(batch_size, latent_dim):
     return np.float32(np.random.normal(size=[batch_size, latent_dim]))
 
 
-def discriminator(x, activation_fn, training, reuse=None):
+def discriminator(x, training=False, reuse=None):
     """ Model function of 1D GAN discriminator """
     # Convolutional layers
+    activation_fn = tf.nn.leaky_relu
     conv = tf.layers.conv1d(inputs=x, filters=2 * CAPACITY, kernel_size=4, strides=2, activation=activation_fn,
                             kernel_initializer=utils.xavier_init('relu'), padding='valid', name='conv_1', reuse=reuse)
     conv = tf.layers.conv1d(inputs=conv, filters=4 * CAPACITY, kernel_size=4, strides=2, activation=activation_fn,
@@ -71,15 +72,16 @@ def discriminator(x, activation_fn, training, reuse=None):
     conv = tf.reshape(conv, shape=[-1, np.prod([dim.value for dim in conv.shape[1:]])])
 
     # Dense layers
-    dense = tf.layers.dense(inputs=conv, units=1024, activation=activation_fn, name='dense_1', kernel_initializer=utils.xavier_init(), reuse=reuse)
+    dense = tf.layers.dense(inputs=conv, units=1024, name='dense_1', kernel_initializer=utils.xavier_init(), activation=activation_fn, reuse=reuse)
     return tf.layers.dense(inputs=dense, units=1, activation=tf.nn.sigmoid, name='dense_2', reuse=reuse, kernel_initializer=utils.xavier_init())
 
 
-def generator(z, activation_fn, window, num_channels, training, reuse=None):
+def generator(z, window, num_channels, training=False, reuse=None):
     """ Model function of 1D GAN generator """
     # Find dense feature vector size according to generated window size and convolution strides (note that if you change convolution padding or the number of convolution layers, you will have to change this value too)
     stride = 2
     kernel_size = 4
+    activation_fn = tf.nn.leaky_relu
 
     # We find the dimension of output after 4 convolutions on 1D window
     def get_upconv_output_dim(in_dim): return (in_dim - kernel_size) // stride + 1  # Transposed convolution with VALID padding
@@ -116,7 +118,7 @@ def generator(z, activation_fn, window, num_channels, training, reuse=None):
 
 def gan_losses(z, x, activation_fn, window, grad_penalty_lambda, gan_training):
     with tf.variable_scope('generator'):
-        g_sample = generator(z, activation_fn, window, num_channels=x.shape[-1].value, training=gan_training)
+        g_sample = generator(z, window, num_channels=x.shape[-1].value, training=gan_training)
     if grad_penalty_lambda is not None:
         # Get interpolates for gradient penalty (improved WGAN)
         with tf.variable_scope('gradient_penalty'):
@@ -124,10 +126,10 @@ def gan_losses(z, x, activation_fn, window, grad_penalty_lambda, gan_training):
             x_hat = epsilon * x + (1.0 - epsilon) * g_sample
     # Apply discriminator on real, fake and interpolated data
     with tf.variable_scope('discriminator'):
-        d_real = discriminator(x, activation_fn, training=gan_training)
-        d_fake = discriminator(g_sample, activation_fn, reuse=True, training=gan_training)
+        d_real = discriminator(x, training=gan_training)
+        d_fake = discriminator(g_sample, reuse=True, training=gan_training)
         if grad_penalty_lambda is not None:
-            d_hat = discriminator(x_hat, activation_fn, reuse=True, training=gan_training)
+            d_hat = discriminator(x_hat, reuse=True, training=gan_training)
     # Process gradient penalty
     gradient_penalty = 0.
     if grad_penalty_lambda is not None:
@@ -153,9 +155,9 @@ def gan_optimizers(d_loss, g_loss, lr):
             tf.summary.histogram(v.name, v)"""
     disc_vars = [v for v in tf.trainable_variables() if v.name.startswith('discriminator')]
     gen_vars = [v for v in tf.trainable_variables() if v.name.startswith('generator')]
-    extra_update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)  # Nescessary for batch normalization to update its mean and variance
-    with tf.control_dependencies(extra_update_ops):
+    with tf.control_dependencies(tf.get_collection(tf.GraphKeys.UPDATE_OPS, scope='discriminator')):
         d_optimizer = tf.train.AdamOptimizer(learning_rate=lr, beta1=0.5, beta2=0.9).minimize(d_loss, var_list=disc_vars, name='disc_opt')
+    with tf.control_dependencies(tf.get_collection(tf.GraphKeys.UPDATE_OPS, scope='generator')):
         g_optimizer = tf.train.AdamOptimizer(learning_rate=lr, beta1=0.5, beta2=0.9).minimize(g_loss, var_list=gen_vars, name='gen_opt')
     return tf.tuple([d_loss], control_inputs=[d_optimizer]), tf.tuple([g_loss], control_inputs=[g_optimizer])
 
@@ -266,9 +268,9 @@ def train(dataset, hp, sample_shape, train_dir):
 
 
 def main(_=None):
-    train_dir = '/output/models/sinus_test20/' if tf.flags.FLAGS.floyd_job else './models/sinus_test20/'
+    train_dir = '/output/models/sinus_test22/' if tf.flags.FLAGS.floyd_job else './models/sinus_test22/'
     data_path = './data/data.csv'
-    # data_path = './data/1.mp3'
+    #data_path = './data/1.mp3'
 
     # Set log level to debug
     tf.logging.set_verbosity(tf.logging.INFO)
