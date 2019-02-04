@@ -33,8 +33,7 @@ __all__ = ['restore', 'generate', 'main']
 
 
 # Hyper parameters
-hp = {'activation_fn': tf.nn.leaky_relu,  # Don't forget to change Xavier initialization accordingly when changing activation function
-      'lr': 1e-4,
+hp = {'lr': 1e-4,
       #   'warm_resart_lr': {
       #       'initial_cycle_length': 20,
       #       'lr_cycle_growth': 1.5,
@@ -116,7 +115,7 @@ def generator(z, window, num_channels, training=False, reuse=None):
     return tf.squeeze(upconv, axis=2, name='output')
 
 
-def gan_losses(z, x, activation_fn, window, grad_penalty_lambda, gan_training):
+def gan_losses(z, x, window, grad_penalty_lambda, gan_training):
     with tf.variable_scope('generator'):
         g_sample = generator(z, window, num_channels=x.shape[-1].value, training=gan_training)
     if grad_penalty_lambda is not None:
@@ -209,7 +208,7 @@ def train(dataset, hp, sample_shape, train_dir):
         image = summarize_generated_curves()
 
     # Create optimizers
-    d_loss, g_loss = gan_losses(z, X, hp['activation_fn'], hp['window'], hp['grad_penalty_lambda'], gan_training)
+    d_loss, g_loss = gan_losses(z, X, hp['window'], hp['grad_penalty_lambda'], gan_training)
     d_optimizer, g_optimizer = gan_optimizers(d_loss, g_loss, lr)
 
     # Create model saver
